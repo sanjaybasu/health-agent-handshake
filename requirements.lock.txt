@@ -1,0 +1,6 @@
+anthropic==1.11.0
+cryptography==50.0.2
+matplotlib==3.11.2
+numpy==2.5.3
+pandas==3.0.6
+scipy==1.18.1

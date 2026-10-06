@@ -1,0 +1,10 @@
+results/
+data/
+output/
+.venv/
+__pycache__/
+*_proof.txt
+*.csv
+*.json
+*.png
+*.pdf

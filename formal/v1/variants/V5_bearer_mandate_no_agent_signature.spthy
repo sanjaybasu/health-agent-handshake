@@ -1,0 +1,213 @@
+theory HAH
+begin
+
+/*
+  Health Agent Handshake (HAH): symbolic model.
+  Parties: patient P, operator O, agent A (and sub-agent B), counterparty C, identity provider.
+  The identity provider is modelled as an authentic public-key infrastructure (!Pk) for every
+  party; the agent's key is additionally bound to its operator by an operator-signed attestation.
+  Network: Dolev-Yao. Long-term keys may be revealed (Reveal events); lemmas state which
+  compromises they tolerate.
+  Revocation (P4 status) is not modelled here; it is tested in the reference implementation.
+*/
+
+builtins: signing
+
+restriction Equality:
+  "All x y #i. Eq(x, y) @i ==> x = y"
+
+restriction OneKeyPerName:
+  "All X #i #j. Register(X) @i & Register(X) @j ==> #i = #j"
+
+// ------------------------------------------------------------------ keys
+
+rule Register_pk:
+  [ Fr(~ltk) ]
+  --[ Register($X) ]->
+  [ !Ltk($X, ~ltk), !Pk($X, pk(~ltk)), Out(pk(~ltk)) ]
+
+rule Reveal_ltk:
+  [ !Ltk(X, k) ] --[ Reveal(X) ]-> [ Out(k) ]
+
+// ------------------------------------------------------------------ P2 attestation
+
+rule Operator_attests_agent:
+  let att = <'att', $O, $A, pka> in
+  [ !Ltk($O, ko), !Pk($A, pka) ]
+  --[ Attest($O, $A) ]->
+  [ Out(<att, sign(att, ko)>) ]
+
+// ------------------------------------------------------------------ P3 consent and mandate
+
+rule Patient_consents:
+  let cons = <'consent', $P, $O, $A, $act, $f, $t> in
+  [ !Ltk($P, kp) ]
+  --[ Consent($P, $O, $A, $act, $f, $t) ]->
+  [ Out(<cons, sign(cons, kp)>) ]
+
+rule Operator_issues_mandate:
+  let cons = <'consent', P, $O, A, act, f, t>
+      m = <'mandate', ~mid, $O, A, P, act, f, t> in
+  [ In(<cons, scons>), !Pk(P, pkp), !Ltk($O, ko), Fr(~mid) ]
+  --[ Eq(verify(scons, cons, pkp), true), Mandate(~mid, $O, A, P, act, f, t) ]->
+  [ Out(<m, sign(m, ko), cons, scons>) ]
+
+// ------------------------------------------------------------------ P4 challenge
+
+rule Counterparty_challenge:
+  [ Fr(~n) ]
+  --[ Challenge($C, ~n) ]->
+  [ St_C($C, ~n), Out(<'chal', $C, ~n>) ]
+
+// ------------------------------------------------------------------ agent request
+
+rule Agent_requests:
+  let m   = <'mandate', mid, O, $A, P, act, f, t>
+      req = <'req', $A, C, n, m> in
+  [ In(<'chal', C, n>), In(<m, sm, cons, scons>), !Ltk($A, ka) ]
+  --[ AgentSent($A, C, n, act, f, mid) ]->
+  [ Out(<req, sign(req, ka), sm, cons, scons>) ]
+
+// ------------------------------------------------------------------ P5 transaction-bound approval
+
+rule Patient_approves:
+  let appr = <'appr', mid, act, C, f, n> in
+  [ In(<'apprreq', $P, mid, act, C, f, n>), !Ltk($P, kp) ]
+  --[ Approved($P, mid, act, C, f, n) ]->
+  [ Out(<appr, sign(appr, kp)>) ]
+
+// ------------------------------------------------------------------ counterparty acceptance
+
+rule Counterparty_accepts_T2:
+  let att = <'att', O, A, pka>
+      m   = <'mandate', mid, O, A, P, act, f, 'T2'>
+      cons   = <'consent', P, O, A, act, f, 'T2'>
+      req = <'req', A, $C, n, m>
+      r   = <'rcpt', $C, P, act, f, n, mid> in
+  [ St_C($C, n), In(<req, sreq, sm, cons, scons>), In(<att, satt>),
+    !Pk(O, pko), !Pk(P, pkp), !Ltk($C, kc) ]
+  --[ Eq(verify(satt, att, pko), true), 
+      Eq(verify(sm, m, pko), true), Eq(verify(scons, cons, pkp), true),
+      Accept($C, O, A, P, act, f, n, mid), AcceptNonce($C, n), AcceptT2($C, A, act, n) ]->
+  [ Out(<r, sign(r, kc)>) ]
+
+rule Counterparty_accepts_T3:
+  let att  = <'att', O, A, pka>
+      m    = <'mandate', mid, O, A, P, act, f, 'T3'>
+      cons    = <'consent', P, O, A, act, f, 'T3'>
+      req  = <'req', A, $C, n, m>
+      appr = <'appr', mid, act, $C, f, n>
+      r    = <'rcpt', $C, P, act, f, n, mid> in
+  [ St_C($C, n), In(<req, sreq, sm, cons, scons>), In(<att, satt>), In(<appr, sap>),
+    !Pk(O, pko), !Pk(P, pkp), !Ltk($C, kc) ]
+  --[ Eq(verify(satt, att, pko), true), 
+      Eq(verify(sm, m, pko), true), Eq(verify(scons, cons, pkp), true), Eq(verify(sap, appr, pkp), true),
+      Accept($C, O, A, P, act, f, n, mid), AcceptNonce($C, n), AcceptT3($C, P, mid, act, f, n) ]->
+  [ Out(<r, sign(r, kc)>) ]
+
+// ------------------------------------------------------------------ sub-agent delegation (attenuation)
+
+rule Agent_delegates:
+  let m = <'mandate', mid, O, $A, P, act, f, t>
+      d = <'deleg', mid, $A, $B, act, f, t> in
+  [ In(<m, sm, cons, scons>), !Ltk($A, ka) ]
+  --[ Delegated($A, $B, mid, act, f) ]->
+  [ Out(<d, sign(d, ka)>) ]
+
+rule Subagent_requests:
+  let d   = <'deleg', mid, A, $B, act, f, t>
+      req = <'subreq', $B, C, n, d> in
+  [ In(<'chal', C, n>), In(<d, sd>), !Ltk($B, kb) ]
+  --[ SubSent($B, C, n, act, f, mid) ]->
+  [ Out(<req, sign(req, kb)>) ]
+
+rule Counterparty_accepts_sub_T2:
+  let attA = <'att', O, A, pka>
+      attB = <'att', O, B, pkb>
+      m    = <'mandate', mid, O, A, P, act, f, 'T2'>
+      cons    = <'consent', P, O, A, act, f, 'T2'>
+      d    = <'deleg', mid, A, B, act, f, 'T2'>
+      req  = <'subreq', B, $C, n, d>
+      r    = <'rcpt', $C, P, act, f, n, mid> in
+  [ St_C($C, n), In(<req, sreq>), In(<d, sd>), In(<m, sm, cons, scons>), In(<attA, sattA>), In(<attB, sattB>),
+    !Pk(O, pko), !Pk(P, pkp), !Ltk($C, kc) ]
+  --[ Eq(verify(sattA, attA, pko), true), Eq(verify(sattB, attB, pko), true),
+       Eq(verify(sd, d, pka), true),
+      Eq(verify(sm, m, pko), true), Eq(verify(scons, cons, pkp), true),
+      AcceptSub($C, O, A, B, P, act, f, n, mid), AcceptNonce($C, n) ]->
+  [ Out(<r, sign(r, kc)>) ]
+
+// ------------------------------------------------------------------ P6 patient ledger
+
+rule Patient_ledger:
+  let r = <'rcpt', C, $P, act, f, n, mid> in
+  [ In(<r, sr>), !Pk(C, pkc) ]
+  --[ Eq(verify(sr, r, pkc), true), Ledger($P, C, act, f, n) ]->
+  [ ]
+
+// ================================================================== lemmas
+
+// L1 executability (sanity): honest runs reach each acceptance with no key compromise.
+lemma L1a_exec_T2:
+  exists-trace
+  "Ex C A act n #i. AcceptT2(C, A, act, n) @i & not (Ex X #r. Reveal(X) @r)"
+
+lemma L1b_exec_T3:
+  exists-trace
+  "Ex C P mid act f n #i. AcceptT3(C, P, mid, act, f, n) @i & not (Ex X #r. Reveal(X) @r)"
+
+lemma L1c_exec_sub:
+  exists-trace
+  "Ex C O A B P act f n mid #i. AcceptSub(C, O, A, B, P, act, f, n, mid) @i & not (Ex X #r. Reveal(X) @r)"
+
+lemma L1d_exec_ledger:
+  exists-trace
+  "Ex P C act f n #i. Ledger(P, C, act, f, n) @i & not (Ex X #r. Reveal(X) @r)"
+
+// L2 agent and operator authentication: an accepted request was sent by the attested agent,
+// for this counterparty and nonce, unless the agent's or operator's key was revealed.
+lemma L2_agent_authentication:
+  "All C O A P act f n mid #i. Accept(C, O, A, P, act, f, n, mid) @i ==>
+     (Ex #j. AgentSent(A, C, n, act, f, mid) @j & #j < #i)
+     | (Ex #r. Reveal(A) @r) | (Ex #r. Reveal(O) @r)"
+
+// L3 consent binding: an accepted action and field set were consented to by the patient for
+// this operator and agent, unless the patient's key was revealed. Holds even if the operator
+// is compromised, because the counterparty checks the patient's signature under an
+// identity-provider key.
+lemma L3_consent_binding:
+  "All C O A P act f n mid #i. Accept(C, O, A, P, act, f, n, mid) @i ==>
+     (Ex t #j. Consent(P, O, A, act, f, t) @j & #j < #i) | (Ex #r. Reveal(P) @r)"
+
+// L3b mandate issuance: an accepted mandate was issued by the operator, unless the operator's
+// key was revealed.
+lemma L3b_mandate_issued:
+  "All C O A P act f n mid #i. Accept(C, O, A, P, act, f, n, mid) @i ==>
+     (Ex t #j. Mandate(mid, O, A, P, act, f, t) @j & #j < #i) | (Ex #r. Reveal(O) @r)"
+
+// L4 replay resistance: a counterparty accepts each nonce at most once.
+lemma L4_no_replay:
+  "All C n #i #j. AcceptNonce(C, n) @i & AcceptNonce(C, n) @j ==> #i = #j"
+
+// L5 transaction-bound step-up: a T3 acceptance implies the patient approved exactly this
+// (mandate, action, counterparty, fields, nonce), unless the patient's key was revealed.
+lemma L5_stepup_binding:
+  "All C P mid act f n #i. AcceptT3(C, P, mid, act, f, n) @i ==>
+     (Ex #j. Approved(P, mid, act, C, f, n) @j & #j < #i) | (Ex #r. Reveal(P) @r)"
+
+// L7 attenuation: a sub-agent acceptance implies the parent agent delegated exactly this
+// action and field set under this mandate, and the patient consented to them for the parent.
+lemma L7_attenuation:
+  "All C O A B P act f n mid #i. AcceptSub(C, O, A, B, P, act, f, n, mid) @i ==>
+     ((Ex #j. Delegated(A, B, mid, act, f) @j & #j < #i) | (Ex #r. Reveal(A) @r) | (Ex #r. Reveal(O) @r))
+     & ((Ex t #k. Consent(P, O, A, act, f, t) @k & #k < #i) | (Ex #r. Reveal(P) @r))"
+
+// L8 receipt integrity: an entry in the patient's ledger corresponds to an acceptance by that
+// counterparty, unless the counterparty's key was revealed.
+lemma L8_receipt_integrity:
+  "All P C act f n #i. Ledger(P, C, act, f, n) @i ==>
+     (Ex O A mid #j. Accept(C, O, A, P, act, f, n, mid) @j & #j < #i)
+     | (Ex O A B mid #j. AcceptSub(C, O, A, B, P, act, f, n, mid) @j & #j < #i)
+     | (Ex #r. Reveal(C) @r)"
+
+end

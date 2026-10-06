@@ -1,0 +1,70 @@
+theory HAH_voice
+begin
+
+/*
+  Voice-channel (PSTN) fallback. The telephone call is an insecure channel: the attacker can
+  hear, replay, and speak. Before the call, the operator registers a single-use code bound to
+  (operator, agent, counterparty, action) at its verification service. On the call, the agent
+  states operator, action and code. A human verifier at the counterparty either
+  (a) looks the code up over an authentic channel (directory-listed web page or callback), or
+  (b) accepts the spoken claim without lookup.
+  Codes are modelled as fresh names; guessing is outside the symbolic model (the reference
+  implementation uses 8 characters from a 31-symbol alphabet, about 8.5 x 10^11 values, single
+  use, 15-minute expiry).
+*/
+
+restriction Unique_lookup:
+  "All code #i #j. LookupUsed(code) @i & LookupUsed(code) @j ==> #i = #j"
+
+rule Operator_registers_code:
+  [ Fr(~code) ]
+  --[ CodeReg($O, $A, $C, $act, ~code) ]->
+  [ Code(~code, $O, $A, $C, $act), AgentCode($A, $O, $C, $act, ~code) ]
+
+rule Agent_speaks_on_call:
+  [ AgentCode($A, O, C, act, code) ]
+  --[ VoiceClaim($A, O, C, act, code) ]->
+  [ Out(<'voice', O, act, code>) ]
+
+// (a) the verifier looks the code up; the service returns the bound record and marks it used.
+rule Verifier_with_lookup:
+  [ In(<'voice', O, act, code>), Code(code, O, A, $C, act) ]
+  --[ VoiceAcceptLookup($C, O, A, act, code), LookupUsed(code) ]->
+  [ ]
+
+// (b) the verifier accepts the spoken claim without lookup.
+rule Verifier_without_lookup:
+  [ In(<'voice', O, act, code>) ]
+  --[ VoiceAcceptNoLookup($C, O, act) ]->
+  [ ]
+
+lemma V0_exec_lookup:
+  exists-trace
+  "Ex C O A act code #i. VoiceAcceptLookup(C, O, A, act, code) @i"
+
+// V1: with lookup, an accepted call corresponds to a code the operator registered for this
+// counterparty and action. Expected VERIFIED.
+lemma V1_lookup_authenticates_operator_and_action:
+  "All C O A act code #i. VoiceAcceptLookup(C, O, A, act, code) @i ==>
+     Ex #j. CodeReg(O, A, C, act, code) @j & #j < #i"
+
+// V2: with lookup, each registered code yields at most one acceptance. Expected VERIFIED.
+lemma V2_lookup_single_use:
+  "All C O A act code #i #j. VoiceAcceptLookup(C, O, A, act, code) @i
+     & VoiceAcceptLookup(C, O, A, act, code) @j ==> #i = #j"
+
+// V3: without lookup, acceptance implies the operator registered anything. Expected FALSIFIED
+// (the attacker can claim any operator and action).
+lemma V3_no_lookup_authenticates_operator:
+  "All C O act #i. VoiceAcceptNoLookup(C, O, act) @i ==>
+     Ex A code #j. CodeReg(O, A, C, act, code) @j"
+
+// V4: with lookup, the accepted call was placed by the registered agent. Expected FALSIFIED:
+// an eavesdropper who hears the code can relay it on its own call before the agent's code is
+// looked up, because the telephone channel does not authenticate the caller.
+lemma V4_lookup_authenticates_caller:
+  "All C O A act code #i. VoiceAcceptLookup(C, O, A, act, code) @i ==>
+     Ex #j. VoiceClaim(A, O, C, act, code) @j & #j < #i
+       & not (Ex #k. K(code) @k & #k < #i)"
+
+end

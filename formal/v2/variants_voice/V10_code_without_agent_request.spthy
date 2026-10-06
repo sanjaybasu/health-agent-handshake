@@ -1,0 +1,92 @@
+theory HAH2_voice
+begin
+
+/*
+  Telephone fallback, version 2. Calls are sessions (~sid). The attacker can listen to any call and can place
+  its own calls with any spoken content (rule Adversary_places_call). The operator registers a single-use code
+  bound to operator, agent, patient (subject check), counterparty and action. The human verifier either looks the
+  code up over an authentic channel (directory-listed page or callback), or accepts the spoken claim without
+  lookup. Guessing a code is outside the symbolic model.
+*/
+
+builtins: signing
+
+restriction Equality:
+  "All x y #i. Eq(x, y) @i ==> x = y"
+
+restriction OneKeyPerName:
+  "All X #i #j. Register(X) @i & Register(X) @j ==> #i = #j"
+
+rule Register_pk:
+  [ Fr(~ltk) ] --[ Register($X) ]-> [ !Ltk($X, ~ltk), !Pk($X, pk(~ltk)), Out(pk(~ltk)) ]
+
+rule Reveal_ltk:
+  [ !Ltk(X, k) ] --[ Reveal(X) ]-> [ Out(k) ]
+
+// The agent named in the mandate asks for a code with a signed request.
+rule Agent_requests_code:
+  let rq = <'codereq', $A, $O, $P, $C, $act> in
+  [ !Ltk($A, ka) ] --[ AgentAskedCode($A, $O, $P, $C, $act) ]-> [ Out(<rq, sign(rq, ka)>) ]
+
+restriction Unique_lookup:
+  "All code #i #j. LookupUsed(code) @i & LookupUsed(code) @j ==> #i = #j"
+
+// The operator issues a code only for a request signed by the agent (key from the authentic directory).
+rule Operator_registers_code:
+  let rq = <'codereq', A, $O, P, C, act> in
+  [ In(<rq, sig>), !Pk(A, pka), Fr(~code) ]
+  --[ CodeReg($O, A, P, C, act, ~code) ]->
+  [ Code(~code, $O, A, P, C, act), AgentCode(A, $O, P, C, act, ~code) ]
+
+// The agent places a call; the content is spoken on an insecure channel.
+rule Agent_places_call:
+  [ AgentCode(A, O, P, C, act, code), Fr(~sid) ]
+  --[ CallFrom(A, ~sid), VoiceClaim(A, O, P, C, act, code, ~sid) ]->
+  [ Out(<'voice', ~sid, O, P, act, code>), Ring(C, ~sid, O, P, act, code) ]
+
+// The attacker places its own call with any content it knows.
+rule Adversary_places_call:
+  [ In(<O, P, act, code>), Fr(~sid) ]
+  --[ CallFrom('adversary', ~sid) ]->
+  [ Ring($C, ~sid, O, P, act, code) ]
+
+rule Verifier_with_lookup:
+  [ Ring($C, sid, O, P, act, code), Code(code, O, A, P, $C, act) ]
+  --[ VoiceAcceptLookup($C, O, A, P, act, code, sid), LookupUsed(code) ]->
+  [ ]
+
+rule Verifier_without_lookup:
+  [ Ring($C, sid, O, P, act, code) ]
+  --[ VoiceAcceptNoLookup($C, O, P, act, sid) ]->
+  [ ]
+
+lemma V0_exec_lookup:
+  exists-trace
+  "Ex C O A P act code sid #i. VoiceAcceptLookup(C, O, A, P, act, code, sid) @i"
+
+// V1: with lookup, the accepted call's operator, agent, patient, counterparty and action match a registration.
+lemma V1_lookup_authenticates_registration:
+  "All C O A P act code sid #i. VoiceAcceptLookup(C, O, A, P, act, code, sid) @i ==>
+     Ex #j. CodeReg(O, A, P, C, act, code) @j & #j < #i"
+
+// V1b: a code is registered only for a request that the named agent made, unless the agent's key was revealed.
+lemma V1b_code_requested_by_agent:
+  "All O A P C act code #i. CodeReg(O, A, P, C, act, code) @i ==>
+     (Ex #j. AgentAskedCode(A, O, P, C, act) @j & #j < #i) | (Ex #r. Reveal(A) @r)"
+
+lemma V2_lookup_single_use:
+  "All C O A P act code sid sid2 #i #j. VoiceAcceptLookup(C, O, A, P, act, code, sid) @i
+     & VoiceAcceptLookup(C, O, A, P, act, code, sid2) @j ==> #i = #j"
+
+// V3: without lookup, acceptance implies a registration exists. Expected FALSIFIED.
+lemma V3_no_lookup_authenticates_operator:
+  "All C O P act sid #i. VoiceAcceptNoLookup(C, O, P, act, sid) @i ==>
+     Ex A code #j. CodeReg(O, A, P, C, act, code) @j"
+
+// V4: with lookup, the accepted call was placed by the registered agent. Expected FALSIFIED by a relay:
+// the attacker hears the code on the agent's call and presents it first on its own call.
+lemma V4_lookup_authenticates_caller:
+  "All C O A P act code sid #i. VoiceAcceptLookup(C, O, A, P, act, code, sid) @i ==> CallFrom(A, sid) @i
+     | (Ex #j. CallFrom(A, sid) @j)"
+
+end
