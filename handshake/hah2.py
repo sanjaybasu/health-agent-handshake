@@ -43,6 +43,13 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
+def _finite(x):
+    """True for a real, finite number (not bool, not NaN or infinity). Timestamps and expiries must pass this check;
+    NaN would otherwise defeat every comparison (abs(now - nan) > skew and now > nan are both False)."""
+    import math
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
 NONCE_TTL = 300
 TIER3_TRANSACTION_TTL = 24 * 3600   # a tier 3 transaction challenge stays open long enough for the patient to approve
 REQUEST_SKEW = 300
@@ -660,14 +667,14 @@ class Counterparty:
             if op is None:
                 return False, "P1_unknown_or_revoked_operator", None
             att = verify_token(pub_from(op.public_key), req["attestation"], "attest+jwt")
-            if time.time() > att["exp"]:
+            if not _finite(att.get("exp")) or time.time() > att["exp"]:
                 return False, "P2_attestation_expired", None
             pub_from(att["agent_pub"]).verify(b64u_dec(req["sig"]), canon({k: v for k, v in req.items() if k != "sig"}))
         except (InvalidSignature, ValueError, KeyError, TypeError):
             return False, "P1_P2_bad_signature", None
         if req["counterparty_id"] != self.counterparty_id:
             return False, "P1_wrong_audience", None
-        if abs(time.time() - req["ts"]) > REQUEST_SKEW:
+        if not _finite(req.get("ts")) or abs(time.time() - req["ts"]) > REQUEST_SKEW:
             return False, "P4_stale_request", None
         if on == {"P1"}:
             return True, "accepted_operator_only", None
@@ -688,7 +695,7 @@ class Counterparty:
                 or c["subject_commitment"] != cert["subject_commitment"] or c["operator_id"] != root["operator_id"]
                 or c["agent_id"] != root["agent_id"] or c["purpose_of_use"] != root["purpose_of_use"]):
             return False, "P3_consent_not_bound_to_mandate", None
-        if time.time() > c["exp"]:
+        if not _finite(c.get("exp")) or time.time() > c["exp"]:
             return False, "P3_consent_expired", None
         # Action, fields and subject: each must be selectively disclosed and bound in both mandate and consent.
         if req["action"] not in ACTION_TIER:
@@ -744,7 +751,7 @@ class Counterparty:
             return False, "P3_counterparty_class_not_in_mandate", None
         if tier > min(m["tier_ceiling"], att["tier_ceiling"]):
             return False, "P3_tier_above_ceiling", None
-        if time.time() > m["exp"]:
+        if not _finite(m.get("exp")) or time.time() > m["exp"]:
             return False, "P3_mandate_expired", None
 
         if "P4" in on:
@@ -753,7 +760,8 @@ class Counterparty:
                 return False, "P4_nonce_replay_unknown_or_expired", None
             st = verify_token(pub_from(op.public_key), self.operator_status[op.operator_id].snapshot(), "status+jwt")
             cs = verify_token(self.idp.pk, self.idp.snapshot(), "consent-status+jwt")
-            if time.time() - st["iat"] > STATUS_MAX_AGE or time.time() - cs["iat"] > STATUS_MAX_AGE:
+            if (not _finite(st.get("iat")) or not _finite(cs.get("iat")) or time.time() - st["iat"] > STATUS_MAX_AGE
+                    or time.time() - cs["iat"] > STATUS_MAX_AGE):
                 return False, "P4_status_stale", None
             if any(x in st["mandates"] for x in self._chain_ids(req["mandate"])):
                 return False, "P4_mandate_revoked", None
@@ -800,7 +808,7 @@ class Counterparty:
                 a = verify_token(pub_from(op.public_key), t, "attest+jwt")
             except (InvalidSignature, ValueError):
                 return False, "P2_bad_chain_attestation", None, None
-            if time.time() > a["exp"]:
+            if not _finite(a.get("exp")) or time.time() > a["exp"]:
                 return False, "P2_chain_attestation_expired", None, None
             if a["agent_id"] in attest_by_agent:
                 return False, "P2_chain_attestation_overrides_agent", None, None
@@ -936,7 +944,7 @@ class VerificationService:
             raise ValueError("consent does not match mandate")
         if identity_commitment(opening, name, dob) != cert["subject_commitment"]:
             raise ValueError("mandate subject is not the certified person")
-        if time.time() > c["exp"]:
+        if not _finite(c.get("exp")) or time.time() > c["exp"]:
             raise ValueError("consent expired")
         cls = self.counterparty_classes.get(counterparty_id)
         if cls is None or cls not in p["counterparty_classes"] or cls not in c["counterparty_classes"]:

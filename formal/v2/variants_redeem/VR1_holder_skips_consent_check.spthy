@@ -1,0 +1,182 @@
+theory VR1_holder_skips_consent_check
+begin
+
+/*
+  NEGATIVE CONTROL: the data holder does not check the patient-signed consent.
+
+  Health Agent Handshake, permission-carrying (redemption) mode. Symbolic model matching
+  handshake/hah2_redeem.py at the level of abstraction stated here.
+
+  The agent carries the patient's permission, not the patient's data. The mandate names the field, the
+  class of counterparty, and the data holder D, but carries no field value. After the counterparty C
+  accepts a request, C signs a redemption and sends it, with the request and its evidence, to D. D checks
+  the patient-signed consent, the operator-signed mandate and attestation, the agent-signed request, that
+  the request is addressed to the redeemer, that the mandate names D, that the redeemer belongs to the class
+  the patient consented to, and the redeemer's signature; then releases the field value encrypted to C's
+  directory key and signed by D, once per counterparty challenge.
+
+  Parties: patient P, operator O, agent A, counterparty C, data holder D. Keys and counterparty classes are
+  an authentic directory (!Pk, !Class). Network: Dolev-Yao; cryptography is perfect. Any long-term key may
+  be revealed; each lemma states the compromises it tolerates. A revealed agent key models an agent that is
+  fully manipulated: the adversary then knows everything the agent knows and can send any request it could.
+  A revealed counterparty key models a malicious counterparty registered in the directory.
+  Not modelled: time, expiry and revocation, tiers and tier 3 approvals, the content-based tier rules,
+  sub-agents, and multiple fields per request (one field per request, as in hah2.spthy). Tier 3 approval
+  binding is proved for the main profile in hah2.spthy (L5); the rest is tested in the implementation.
+  Holder compromise is out of scope: a compromised holder trivially exposes its own records. Single
+  redemption is modelled, as usual, by a restriction standing for the holder's set of redeemed challenges.
+*/
+
+builtins: signing, asymmetric-encryption
+
+restriction Equality:
+  "All x y #i. Eq(x, y) @i ==> x = y"
+
+restriction OneKeyPerName:
+  "All X #i #j. Register(X) @i & Register(X) @j ==> #i = #j"
+
+restriction OneClassPerCounterparty:
+  "All C x y #i #j. ClassOf(C, x) @i & ClassOf(C, y) @j ==> x = y"
+
+// The data holder's set of redeemed challenges: each (holder, counterparty, challenge) is released once.
+restriction SingleRedemption:
+  "All D C n #i #j. Redeemed(D, C, n) @i & Redeemed(D, C, n) @j ==> #i = #j"
+
+rule Register_pk:
+  [ Fr(~ltk) ] --[ Register($X) ]-> [ !Ltk($X, ~ltk), !Pk($X, pk(~ltk)), Out(pk(~ltk)) ]
+
+// The trust framework records the class of each registered counterparty (pharmacy, broker, clinic).
+rule Register_class:
+  [ !Pk($C, pkc) ] --[ ClassOf($C, $cls) ]-> [ !Class($C, $cls) ]
+
+rule Reveal_ltk:
+  [ !Ltk(X, k) ] --[ Reveal(X) ]-> [ Out(k) ]
+
+// The data holder's record of field f for patient P. The value is fresh and never sent in clear.
+rule Holder_record:
+  [ Fr(~v) ] --[ Record($D, $P, $f, ~v) ]-> [ !Rec($D, $P, $f, ~v) ]
+
+rule Operator_attests_agent:
+  let att = <'att', $O, $A, pka> in
+  [ !Ltk($O, ko), !Pk($A, pka) ] --[ Attest($O, $A) ]-> [ Out(<att, sign(att, ko)>) ]
+
+// Consent names patient, operator, agent, action, field, counterparty class, tier and purpose.
+rule Patient_consents:
+  let cons = <'consent', $P, $O, $A, $act, $f, $cls, $t, $pur> in
+  [ !Ltk($P, kp) ] --[ Consent($P, $O, $A, $act, $f, $cls, $t, $pur) ]-> [ Out(<cons, sign(cons, kp)>) ]
+
+// The mandate names the field and the data holder that keeps it; it carries no value.
+rule Operator_issues_mandate:
+  let cons = <'consent', P, $O, A, act, f, cls, t, pur>
+      m    = <'mandate', ~mid, $O, A, P, act, f, cls, $D, t, pur> in
+  [ In(<cons, scons>), !Pk(P, pkp), !Ltk($O, ko), Fr(~mid) ]
+  --[ Eq(verify(scons, cons, pkp), true), Mandate(~mid, $O, A, P, act, f, cls, $D, t) ]->
+  [ Out(<m, sign(m, ko), cons, scons>) ]
+
+rule Counterparty_challenge:
+  [ Fr(~n) ] --[ Challenge($C, ~n) ]-> [ St_C($C, ~n), Out(<'chal', $C, ~n>) ]
+
+// An honest agent answers any counterparty's challenge, including a malicious one.
+rule Agent_requests:
+  let m   = <'mandate', mid, O, $A, P, act, f, cls, D, t, pur>
+      req = <'req', $A, C, n, m, $prm> in
+  [ In(<'chal', C, n>), In(<m, sm, cons, scons>), !Pk(O, pko), !Ltk($A, ka) ]
+  --[ Eq(verify(sm, m, pko), true), AgentSent($A, O, P, C, n, act, $prm, f, mid) ]->
+  [ Out(<req, sign(req, ka), sm, cons, scons>) ]
+
+// The counterparty verifies the handshake, checks its own class, and redeems at the holder the mandate names.
+rule Counterparty_accepts_and_redeems:
+  let att  = <'att', O, A, pka>
+      m    = <'mandate', mid, O, A, P, act, f, cls, D, t, pur>
+      cons = <'consent', P, O, A, act, f, cls, t, pur>
+      req  = <'req', A, $C, n, m, prm>
+      red  = <'redeem', $C, D, req> in
+  [ St_C($C, n), In(<req, sreq, sm, cons, scons>), In(<att, satt>), !Pk(O, pko), !Pk(P, pkp), !Ltk($C, kc),
+    !Class($C, cls) ]
+  --[ Eq(verify(satt, att, pko), true), Eq(verify(sreq, req, pka), true),
+      Eq(verify(sm, m, pko), true), Eq(verify(scons, cons, pkp), true),
+      Accept($C, O, A, P, act, prm, f, n, mid), RedeemSent($C, D, P, f, n) ]->
+  [ St_Wait($C, D, P, f, n), Out(<<red, sign(red, kc)>, <req, sreq>, <m, sm, cons, scons>, <att, satt>>) ]
+
+// The data holder checks everything itself and releases the value only to the redeeming counterparty.
+rule Holder_releases:
+  let att  = <'att', O, A, pka>
+      m    = <'mandate', mid, O, A, P, act, f, cls, $D, t, pur>
+      cons = <'consent', P, O, A, act, f, cls, t, pur>
+      req  = <'req', A, C, n, m, prm>
+      red  = <'redeem', C, $D, req>
+      ct   = aenc(<'data', $D, P, f, v, n>, pkc) in
+  [ In(<<red, sred>, <req, sreq>, <m, sm, cons, scons>, <att, satt>>),
+    !Pk(C, pkc), !Class(C, cls), !Pk(O, pko), !Pk(P, pkp), !Rec($D, P, f, v), !Ltk($D, kd) ]
+  --[ Eq(verify(sred, red, pkc), true), Eq(verify(satt, att, pko), true), Eq(verify(sreq, req, pka), true),
+      Eq(verify(sm, m, pko), true),
+      Redeemed($D, C, n), Released($D, P, C, f, v, n, A, O) ]->
+  [ Out(<ct, sign(<'rel', $D, C, n, ct>, kd)>) ]
+
+rule Counterparty_receives:
+  let ct = aenc(<'data', D, P, f, v, n>, pk(kc)) in
+  [ St_Wait($C, D, P, f, n), In(<ct, sct>), !Ltk($C, kc), !Pk(D, pkd) ]
+  --[ Eq(verify(sct, <'rel', D, $C, n, ct>, pkd), true), Received($C, D, P, f, v, n) ]-> [ ]
+
+// ================================================================== executability
+
+lemma E1_exec:
+  exists-trace
+  "Ex C D P f v n A O #i #j. Received(C, D, P, f, v, n) @i & Released(D, P, C, f, v, n, A, O) @j
+     & not (Ex X #r. Reveal(X) @r)"
+
+// A release still happens when the agent and the operator are compromised (the region R2 to R5 tolerate).
+lemma E2_exec_agent_and_operator_compromised:
+  exists-trace
+  "Ex D P C f v n A O #i #a #o. Released(D, P, C, f, v, n, A, O) @i & Reveal(A) @a & Reveal(O) @o
+     & not (Ex #r. Reveal(P) @r) & not (Ex #r. Reveal(C) @r) & not (Ex #r. Reveal(D) @r)"
+
+// The adversary does learn a value released to a compromised counterparty (R5's exception is reachable).
+lemma E3_exec_leak_via_compromised_counterparty:
+  exists-trace
+  "Ex D P C f v n A O #i #k #s #r. Record(D, P, f, v) @i & K(v) @k & Released(D, P, C, f, v, n, A, O) @s
+     & Reveal(C) @r & not (Ex #x. Reveal(A) @x) & not (Ex #x. Reveal(O) @x) & not (Ex #x. Reveal(P) @x)"
+
+// ================================================================== security properties
+
+// R1 Consent at the holder: a release implies the patient consented to this field for this operator and agent,
+// for the class of the counterparty that received it. Tolerates compromise of operator, agent and counterparties.
+lemma R1_release_requires_patient_consent:
+  "All D P C f v n A O #i. Released(D, P, C, f, v, n, A, O) @i ==>
+     (Ex act cls t pur #j #q. Consent(P, O, A, act, f, cls, t, pur) @j & ClassOf(C, cls) @q & #j < #i)
+     | (Ex #r. Reveal(P) @r)"
+
+// R2 Audience: a release to C implies the attested agent sent a request for this field addressed to C.
+lemma R2_release_only_to_addressed_counterparty:
+  "All D P C f v n A O #i. Released(D, P, C, f, v, n, A, O) @i ==>
+     (Ex act prm mid #j. AgentSent(A, O, P, C, n, act, prm, f, mid) @j & #j < #i)
+     | (Ex #r. Reveal(A) @r) | (Ex #r. Reveal(O) @r)"
+
+// R3 Redeemer authentication, injective: each release corresponds to a redemption that C itself signed for this
+// challenge, and no other release answers the same challenge of the same counterparty.
+lemma R3_redeemer_authentication_injective:
+  "All D P C f v n A O #i. Released(D, P, C, f, v, n, A, O) @i ==>
+     (Ex #j. RedeemSent(C, D, P, f, n) @j & #j < #i
+        & not (Ex D2 P2 f2 v2 A2 O2 #i2. Released(D2, P2, C, f2, v2, n, A2, O2) @i2 & not (#i2 = #i)))
+     | (Ex #r. Reveal(C) @r)"
+
+// R4 Mandate at the holder: a release implies the operator issued a mandate for this field that names this holder.
+lemma R4_release_requires_mandate_naming_holder:
+  "All D P C f v n A O #i. Released(D, P, C, f, v, n, A, O) @i ==>
+     (Ex mid act cls t #j. Mandate(mid, O, A, P, act, f, cls, D, t) @j & #j < #i) | (Ex #r. Reveal(O) @r)"
+
+// R5 Confidentiality: the adversary learns a record value only if it was released to a compromised counterparty of
+// a class the patient consented to, or the patient's own key is compromised. Compromise of the agent or the
+// operator does not appear: on its own it reveals nothing, because neither ever holds the value.
+lemma R5_data_reaches_adversary_only_via_permitted_compromised_counterparty:
+  "All D P f v #i #k. Record(D, P, f, v) @i & K(v) @k ==>
+     (Ex C n A O act cls t pur #s #r #c #q. Released(D, P, C, f, v, n, A, O) @s & Reveal(C) @r
+        & Consent(P, O, A, act, f, cls, t, pur) @c & ClassOf(C, cls) @q)
+     | (Ex #r. Reveal(P) @r)"
+
+// R6 Integrity: what a counterparty accepts as the record is what the holder released to it.
+lemma R6_received_data_from_holder:
+  "All C D P f v n #i. Received(C, D, P, f, v, n) @i ==>
+     (Ex A O #j. Released(D, P, C, f, v, n, A, O) @j & #j < #i) | (Ex #r. Reveal(D) @r)"
+
+end

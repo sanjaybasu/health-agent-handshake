@@ -7,12 +7,34 @@ Writes markdown tables to results/tables/.
 """
 import glob
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "results" / "tables"
 OUT.mkdir(parents=True, exist_ok=True)
+OUT.mkdir(parents=True, exist_ok=True)
 
+ATTACK = {
+    "L2_agent_authentication_injective": "Impersonating the agent or altering its request",
+    "L2b_subagent_authentication_injective": "Impersonating a sub-agent",
+    "L3_consent_binding": "Forging the patient's consent, even with the operator's key",
+    "L3b_mandate_issued": "Forging a mandate",
+    "L4_nonce_single_use": "Replaying a request",
+    "L5_stepup_binding": "Reusing a high-risk approval for another action",
+    "L7_delegation_integrity": "Widening authority through a sub-agent",
+    "L8_receipt_integrity": "Forging or altering a receipt",
+}
+SHORT = {
+    "L2_agent_authentication_injective": "Agent authentication: the named agent sent the exact request, once",
+    "L2b_subagent_authentication_injective": "Sub-agent authentication: the named sub-agent sent the exact request, once",
+    "L3_consent_binding": "Consent binding: the consent carries the patient's signature",
+    "L3b_mandate_issued": "Mandate issuance: the mandate came from the operator",
+    "L4_nonce_single_use": "Freshness: each challenge is accepted once",
+    "L5_stepup_binding": "Transaction-bound approval: a high-risk approval covers one action and its parameters",
+    "L7_delegation_integrity": "Delegation integrity: a sub-agent gains no extra authority",
+    "L8_receipt_integrity": "Receipt integrity: the receipt is genuine and unaltered",
+}
 LEMMA_LABEL = {
     "L2_agent_authentication_injective": "Agent authentication (injective agreement with operator, patient, counterparty, nonce, action, parameters, fields)",
     "L2b_subagent_authentication_injective": "Sub-agent authentication (injective agreement)",
@@ -42,45 +64,60 @@ def formal_table():
     variants = [m for m in models if "/variants/" in m["model"]]
     vvariants = [m for m in models if "/variants_voice/" in m["model"]]
     vnames = [Path(m["model"]).stem for m in variants]
-    lines = [f"Prover: {f['tamarin_version']}; Maude {f['maude_version']}.", "",
-             "| Property | Full model | " + " | ".join(vnames) + " |",
-             "|---|---|" + "---|" * len(vnames)]
+    short = [n.split("_")[0] for n in vnames]
+    key = "; ".join(f"{n.split('_')[0]}, {n.split('_', 1)[1].replace('_', ' ')}" for n in vnames)
+    lines = [f"Prover: Tamarin {f['tamarin_version'].split(',')[0].split()[-1]}; Maude {f['maude_version']}. Negative controls, each removing one check: {key}.", "",
+             "| Property | Attack prevented | Full | " + " | ".join(short) + " |",
+             "|" + "-" * 34 + "|" + "-" * 26 + "|" + "-" * 6 + "|" + ("-" * 5 + "|") * len(vnames)]
     for k, lab in LEMMA_LABEL.items():
         if not k.startswith("L"):
             continue
-        row = [lab, main["lemmas"][k]["status"]] + [v["lemmas"][k]["status"] for v in variants]
+        mark = lambda st: "holds" if st == "verified" else ("attack" if st == "falsified" else st)
+        row = [SHORT[k], ATTACK[k], mark(main["lemmas"][k]["status"])] + [mark(v["lemmas"][k]["status"]) for v in variants]
         lines.append("| " + " | ".join(row) + " |")
     vnames2 = [Path(m["model"]).stem for m in vvariants]
-    lines += ["", "| Telephone property | Full model | " + " | ".join(vnames2) + " |", "|---|---|" + "---|" * len(vnames2)]
+    lines += ["", "Telephone control: " + "; ".join(f"{n.split('_')[0]}, {n.split('_', 1)[1].replace('_', ' ')}" for n in vnames2) + ".", "",
+              "| Telephone property | Full model | " + " | ".join(n.split("_")[0] for n in vnames2) + " |", "|---|---|" + "---|" * len(vnames2)]
     for k, lab in LEMMA_LABEL.items():
         if k.startswith("V") and k in voice["lemmas"]:
             lines.append(f"| {lab} | {voice['lemmas'][k]['status']} | " + " | ".join(v["lemmas"].get(k, {}).get("status", "") for v in vvariants) + " |")
-    lines += ["", "Executability lemmas (honest runs reach each acceptance with no key compromise): " +
-              ", ".join(f"{k} {v['status']}" for k, v in main["lemmas"].items() if k.startswith("L1")) + ".",
-              f"Wall time for the full model: {main['wall_seconds']} s. All models passed Tamarin wellformedness checks: "
-              f"{all(m['wellformedness_ok'] for m in models)}."]
+    ex = [v["status"] for k, v in main["lemmas"].items() if k.startswith("L1")]
+    lines += ["", f"Executability: {sum(x == 'verified' for x in ex)} of {len(ex)} lemmas showing that honest runs reach each kind of acceptance "
+              "(a tier 2 request, a tier 3 request, a request through a sub-agent, and a logged receipt) without key compromise were verified.",
+              f"Wall time for the full model: {main['wall_seconds']} s. "
+              + ("All models passed Tamarin's wellformedness checks." if all(m["wellformedness_ok"] for m in models)
+                 else "Not all models passed Tamarin's wellformedness checks.")]
     (OUT / "table_formal_lemmas.md").write_text("\n".join(lines) + "\n")
 
 
 def conformance_table():
     c = json.load(open(ROOT / "results" / "conformance_v2.json"))
     levels = c["levels"]
-    head = "| Case | " + " | ".join(levels) + " |"
+    LEV = {"L0_name_dob": "L0 name and date of birth", "L1_operator": "L1 operator", "L2_operator_mandate": "L2 operator and mandate",
+           "L3_plus_fresh_status": "L3 plus freshness and status", "L4_full_hah": "L4 full handshake"}
+    yes = lambda b: "passed" if b else "failed"
+    head = "| Case | " + " | ".join(LEV.get(l, l) for l in levels) + " |"
     lines = [head, "|---|" + "---|" * len(levels)]
     for kind in ("legit", "attacks"):
         for name, v in c[kind].items():
-            cells = [("accepted" if v[l]["accepted"] else "rejected: " + v[l]["reason"]) for l in levels]
+            def why(r):
+                m = re.match(r"((?:P\d_)+)(.*)", r)
+                if not m:
+                    return r.replace("_", " ")
+                return "/".join("H" + x[1] for x in m.group(1).rstrip("_").split("_")) + ": " + m.group(2).replace("_", " ")
+            cells = [("accepted" if v[l]["accepted"] else "rejected, " + why(v[l]["reason"])) for l in levels]
             lines.append(f"| {'(legitimate) ' if kind == 'legit' else ''}{name.replace('_', ' ')} | " + " | ".join(cells) + " |")
     lines += ["", "| Level | Attacks accepted | Legitimate requests accepted |", "|---|---|---|"]
     for l in levels:
         a, g = c["attack_success"][l], c["legit_acceptance"][l]
-        lines.append(f"| {l} | {a['accepted']} of {a['total']} | {g['accepted']} of {g['total']} |")
+        lines.append(f"| {LEV.get(l, l)} | {a['accepted']} of {a['total']} | {g['accepted']} of {g['total']} |")
     li, vc = c["log_integrity"], c["voice_code"]
-    lines += [""] + [f"Issuer-side test, {k.replace('_', ' ')}: accepted = {v['issued']} ({v['reason']})." for k, v in c["issuer_side"].items()]
+    lines += [""] + [f"Issuer-side test, {k.replace('_', ' ')}: {'refused' if not v['issued'] else 'accepted'} ({v['reason'].split(':', 1)[-1].strip()})." for k, v in c["issuer_side"].items()]
     lines += [
-              f"Receipt log (RFC 9162-style): inclusion proofs verify = {li['inclusion_proofs_verify']}; consistency proof verifies = "
-              f"{li['consistency_proof_verifies']}; tampering detected = {li['tamper_detected']}.",
-              "Telephone code: " + "; ".join(f"{k.replace('_', ' ')} = {v:,}" if isinstance(v, int) and not isinstance(v, bool) else f"{k.replace('_', ' ')} = {v}" for k, v in vc.items()) + "."]
+              f"Receipt log (RFC 9162-style): inclusion proofs, {yes(li['inclusion_proofs_verify'])}; consistency proof, "
+              f"{yes(li['consistency_proof_verifies'])}; tamper detection, {yes(li['tamper_detected'])}.",
+              "Refusal receipts and operator gate: " + "; ".join(f"{k.replace('_', ' ')}, {yes(v)}" for k, v in c["receipts_and_gate"].items()) + ".",
+              "Telephone code: " + "; ".join(f"{k.replace('_', ' ')}, {v:,}" if isinstance(v, int) and not isinstance(v, bool) else f"{k.replace('_', ' ')}, {yes(v)}" for k, v in vc.items()) + "."]
     (OUT / "table_conformance.md").write_text("\n".join(lines) + "\n")
 
 
@@ -90,7 +127,7 @@ def bench_tables():
         run = s["run"]
         lines = [f"Run: {run}; conversations: {s['n_conversations']}.", "",
                  "| Model | Configuration | Conversations | E1 attack success, % (95% CI) | E2 over-disclosure, % (95% CI) | "
-                 "E3 completion (benign), % (95% CI) | Protected attribute disclosed | Out-of-mandate action accepted |",
+                 "E3 request acceptance (benign), % (95% CI) | Protected attribute disclosed | Out-of-mandate action accepted |",
                  "|---|---|---|---|---|---|---|---|"]
         for model, m in s["by_model"].items():
             for cfg, v in m["by_config"].items():
