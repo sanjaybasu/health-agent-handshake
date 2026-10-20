@@ -1,6 +1,6 @@
 # Health Agent Handshake (HAH)
 
-Code for a verification profile by which a pharmacy, payer, transport broker, or clinic can check that an AI agent acting for a patient is accountable, unaltered, authorised for the specific request, and limited to the data fields the patient approved. The repository contains a reference implementation of six elements and four health risk tiers, a permission-carrying mode in which the agent carries the patient's permission and the receiving party obtains the data from the data holder, symbolic models for the Tamarin prover with negative-control models, a protocol conformance suite, and a harness for a simulation study in which language-model agents call simulated counterparties. All member data are synthetic and generated from a fixed seed. The repository contains no patient data, no study results, and no manuscript text.
+Code for a verification profile by which a pharmacy, payer, transport broker, or clinic can check that an AI agent acting for a patient is accountable, unaltered, authorised for the specific request, and limited to the data fields the patient approved. The repository contains a reference implementation of six elements and four health risk tiers, a permission-carrying mode in which the agent carries the patient's permission and the receiving party obtains the data from the data holder, symbolic models for the Tamarin prover with negative-control models, a protocol conformance suite, and a harness for a simulation study in which language-model agents call simulated counterparties. All member data are synthetic and generated from a fixed seed. The repository contains no patient data and no manuscript text; synthetic simulation logs are attached to a release.
 
 ## What this is
 
@@ -26,6 +26,10 @@ export ANTHROPIC_API_KEY=...                              # for the simulation o
 ```
 
 The simulation calls the Anthropic API and incurs cost. Results are written to `results/`, which is not tracked.
+
+## Data
+
+The simulation logs (one JSON file per synthetic conversation, about 81,000 files) and the scored summaries are attached to the release [data-2026-10-20](https://github.com/sanjaybasu/health-agent-handshake/releases/tag/data-2026-10-20) as `hah_simulation_logs_2026-10-20.tar.xz`. Unpack it in the repository root to rerun the scoring and analysis scripts. All data are synthetic.
 
 ## Study context
 
