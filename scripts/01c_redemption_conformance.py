@@ -31,7 +31,7 @@ F = ["dob", "member_id", "name"]
 T3 = {"drug": "metformin 500 mg", "to_pharmacy": "Pharmacy 0412", "from_pharmacy": "Pharmacy 0001"}
 
 
-def world(record=None):
+def world(record=None, ceiling=3):
     w = {"d": H.Directory(), "cps": R.CounterpartyDirectory(), "idp": H.IdentityProvider(), "log": H.TransparencyLog()}
     w["op"] = H.Operator("op:test", "Test Operator PBC", "business_associate", w["d"])
     st = {w["op"].operator_id: w["op"].status}
@@ -48,9 +48,9 @@ def world(record=None):
     w["cert"] = w["idp"].certify(w["pt"])
     w["ag"] = H.Agent("agent:voice-1")
     w["consent"], w["cdisc"] = w["pt"].consent(w["op"].operator_id, w["ag"].agent_id, "TREAT", ACTIONS, FIELDS, ["pharmacy"])
-    w["att"] = w["op"].attest(w["ag"], "model-x", "2026-10", POLICY, 3)
+    w["att"] = w["op"].attest(w["ag"], "model-x", "2026-10", POLICY, ceiling)
     w["m"], w["disc"] = R.issue_reference_mandate(w["op"], w["pt"], w["cert"], w["idp"].pk, w["consent"], w["cdisc"],
-                                                  w["ag"], HOLDER, ACTIONS, FIELDS, ["pharmacy"], 3)
+                                                  w["ag"], HOLDER, ACTIONS, FIELDS, ["pharmacy"], ceiling)
     return w
 
 
@@ -269,6 +269,11 @@ def attacks():
     w = world({**RECORD, "medication_list": "buprenorphine 8 mg film; metformin 500 mg"})
     r = full_flow(w, make_req(w, "refill_request", ["dob", "medication_list", "name"], P))
     rec("protected_value_without_approval", r["ok"], r["why"], "P5_stepup_required_protected_content")
+
+    # A protected value raises the tier at the holder above a tier 2 ceiling: refused even with the patient's approval.
+    w = world({**RECORD, "medication_list": "buprenorphine 8 mg film; metformin 500 mg"}, ceiling=2)
+    r = full_flow(w, make_req(w, "refill_request", ["dob", "medication_list", "name"], P, approval="auto"))
+    rec("protected_value_above_tier_ceiling", r["ok"], r["why"], "P3_tier_above_ceiling_protected_content")
 
     w = world()
     sub = H.Agent("agent:sub-2")

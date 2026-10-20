@@ -240,7 +240,7 @@ def _check_reference_request(req, verifier_id, verifier_class, directory, operat
         if not ok:
             return False, why, {}
     return True, "accepted_reference", {"holder_id": holders.pop(), "cert": cert, "consent": c, "mandate": m,
-                                         "root": root, "tier": tier, "subject_pseudonym": H.open_disclosure(sd)[1]}
+                                         "attestation": att, "root": root, "tier": tier, "subject_pseudonym": H.open_disclosure(sd)[1]}
 
 
 # ---------------------------------------------------------------- data holder
@@ -306,8 +306,11 @@ class DataHolder:
             return False, "R_no_record_for_certified_subject", None
         values = {f: rec[f] for f in req["fields"]}
         # Content-based tier rules, as in hah2.Counterparty._verify: a value that names a controlled or protected drug or
-        # service raises the request to tier 3, which needs the patient's approval of this transaction.
+        # service raises the request to tier 3. The raised tier must be within the mandate's and the attestation's
+        # ceilings, as at the counterparty, and it needs the patient's approval of this transaction.
         if ctx["tier"] < 3 and H.protected_content([v for k, v in values.items() if k not in ("name", "dob")]):
+            if 3 > min(ctx["mandate"]["tier_ceiling"], ctx["attestation"]["tier_ceiling"]):
+                return False, "P3_tier_above_ceiling_protected_content", None
             ok, why = _check_stepup(req, ctx["cert"], ctx["root"], cid)
             if not ok:
                 return False, why + "_protected_content", None
