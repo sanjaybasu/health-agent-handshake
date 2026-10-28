@@ -29,7 +29,7 @@ The simulation calls the Anthropic API and incurs cost. Results are written to `
 
 ## Data
 
-The simulation logs (one JSON file per synthetic conversation, about 81,000 files) and the scored summaries are attached to the release [data-2026-10-20](https://github.com/sanjaybasu/health-agent-handshake/releases/tag/data-2026-10-20) as `hah_simulation_logs_2026-10-20.tar.xz`. Unpack it in the repository root to rerun the scoring and analysis scripts. All data are synthetic.
+The simulation logs (one JSON file per synthetic conversation, about 83,000 files) and the scored summaries are attached to the release [data-2026-10-28](https://github.com/sanjaybasu/health-agent-handshake/releases/tag/data-2026-10-28) as `hah_simulation_logs_2026-10-28.tar.xz`. Unpack it in the repository root to rerun the scoring and analysis scripts. All data are synthetic.
 
 ## Study context
 
