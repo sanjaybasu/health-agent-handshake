@@ -6,6 +6,10 @@ queues the request and waits. A coordinator collects the pending requests of all
 request per round, waits for it to end, and returns each result to its conversation. Model, parameters, prompts, turn
 limits, and scoring are those of the runner. Batch processing costs half the standard price.
 
+Amendment A10: each conversation has its own clock, which stops while the conversation waits for a batch. The registered
+code reads time only for credential lifetimes, challenge freshness, and timestamps, so credentials and challenges age
+with conversation time, as in a real-time call, and not with time spent queued for a batch.
+
 Usage:
   python bench/run_batch_driver.py --runner ablation --run ablation --model claude-haiku-4-5 --arms M,V,D,G
   python bench/run_batch_driver.py --runner a8 --run a8 --model claude-haiku-4-5 --arms C4,IFC
@@ -22,6 +26,28 @@ import anthropic
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+
+_real_time = time
+_clock = threading.local()
+
+
+class _ConversationClock:
+    """Stands in for the time module inside the registered code: time.time() excludes this thread's batch waits."""
+
+    def __getattr__(self, name):
+        return getattr(_real_time, name)
+
+    def time(self):
+        return _real_time.time() - getattr(_clock, "paused", 0.0)
+
+
+def _install_clock():
+    shim = _ConversationClock()
+    for name in ("hah", "hah2", "run_bench"):
+        mod = sys.modules.get(name)
+        if mod is not None and getattr(mod, "time", None) is _real_time:
+            mod.time = shim
 
 
 class _Pending:
@@ -93,7 +119,11 @@ class _Proxy:
         self._coord = coord
 
     def create(self, **params):
-        return self._coord.create(**params)
+        start = _real_time.time()
+        try:
+            return self._coord.create(**params)
+        finally:
+            _clock.paused = getattr(_clock, "paused", 0.0) + (_real_time.time() - start)
 
 
 def main():
@@ -118,6 +148,7 @@ def main():
 
     coord = Coordinator(anthropic.Anthropic(max_retries=6), log)
     RB.client = _Proxy(coord)  # run_bench resolves `client` at call time
+    _install_clock()
     members = S.make_members()
     mk = {m["record"]["member_key"]: m for m in members}
     grid = S.scenario_grid(members)
